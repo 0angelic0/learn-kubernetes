@@ -1,0 +1,195 @@
+kind: Deployment
+apiVersion: apps/v1beta1
+metadata:
+  name: echoserver
+spec:
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: echoserver
+    spec:
+      containers:
+      - name: echoserver
+        image: gcr.io/google-containers/echoserver:1.6
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echoserver
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    app: echoserver
+---
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  name: default-http-backend
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: default-http-backend
+    spec:
+      containers:
+      - name: default-http-backend
+        image: gcr.io/google-containers/defaultbackend:1.0
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: 10m
+            memory: 20Mi
+          requests:
+            cpu: 10m
+            memory: 20Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: default-http-backend
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    app: default-http-backend
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: nginx-config
+data:
+  client-max-body-size: 20m
+  hsts: "false"
+  keep-alive: "30"
+  proxy-body-sie: 20m
+  server-tokens: "false"
+  use-gzip: "true"
+  # use-proxy-protocol: "true"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-ingress
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app: nginx-ingress
+  ports:
+  - name: http
+    port: 80
+  - name: https
+    port: 443
+---
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  name: nginx-ingress
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: nginx-ingress
+    spec:
+      volumes:
+      - name: nginx-template
+        configMap:
+          name: nginx-template
+          items:
+          - key: nginx.tmpl
+            path: nginx.tmpl
+      containers:
+      - name: nginx-ingress-controller
+        image: gcr.io/google-containers/nginx-ingress-controller:0.9.0-beta.10
+        imagePullPolicy: Always
+        volumeMounts:
+        - name: nginx-template
+          mountPath: /etc/nginx/template
+        ports:
+        - containerPort: 80
+        - containerPort: 443
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        args:
+        - /nginx-ingress-controller
+        - --default-backend-service=$(POD_NAMESPACE)/default-http-backend
+        - --configmap=$(POD_NAMESPACE)/nginx-config
+        - --publish-service=$(POD_NAMESPACE)/nginx-ingress
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: 10254
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 5
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: 10254
+            scheme: HTTP
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+---
+kind: Ingress
+apiVersion: extensions/v1beta1
+metadata:
+  name: nginx-ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    kubernetes.io/tls-acme: "true"
+spec:
+  rules:
+  - host: kube.0angelic0.com
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: echoserver
+          servicePort: 80
+  - host: kube2.0angelic0.com
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: echoserver
+          servicePort: 80
+  tls:
+  - secretName: kube-0angelic0-com-tls
+    hosts:
+    - kube.0angelic0.com
+    - kube2.0angelic0.com
